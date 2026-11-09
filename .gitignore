@@ -1,0 +1,17 @@
+# Build outputs
+build/
+.gradle/
+local.properties
+*.apk
+*.aab
+*.wav
+*.o
+*.so
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Toolchain caches
+.engine-build/

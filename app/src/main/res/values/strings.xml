@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">B-3 Physical</string>
+    <color name="wood_dark">#120C08</color>
+    <color name="icon_bg">#1A100A</color>
+    <color name="gold">#D8B45A</color>
+</resources>

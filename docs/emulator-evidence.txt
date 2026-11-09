@@ -1,0 +1,49 @@
+B-3 Physical — on-device emulator evidence
+===========================================
+
+Date: 2026-11-09
+Host: Linux x86_64, no usable /dev/kvm
+Device: headless Android 11 (API 30), default x86_64 system image
+AVD: b3api30, 4 vCPU, 3072 MB RAM, 1280x800 skin
+Graphics: -gpu swiftshader_indirect
+Acceleration: -accel off (TCG; software emulation)
+
+Debug APK installed with:
+  adb install -r app/build/outputs/apk/debug/app-debug.apk
+Activity launched with:
+  adb shell am start -W -n com.b3organ.physical/.MainActivity
+
+Observed process: com.b3organ.physical survived the launch and interaction.
+
+Log excerpt (tags B3Engine, B3Audio, B3Ui; timestamps abbreviated):
+  B3Engine: audio stream open: 48000 Hz, 2 ch, format 2, burst 882, api AAudio
+  B3Engine: audio stream started
+  B3Ui    : view size 1280x800 scale 0.7111111 offset 0.0,44.444427
+  B3Ui    : panel drawn 1280x800 scale 0.7111111 peak 0.0022943467
+  B3Ui    : touch down at 395.15625,899.37494
+  B3Engine: noteOn 48 velocity 1.000
+  B3Engine: noteOff 48
+  B3Audio : level peak=0.0476 rms=0.0057
+
+The peak while C3 was pressed is well above the idle hum/leakage measurement
+of roughly 0.002, proving the native organ output reached the Oboe callback.
+The final tools/emulator_smoke.sh run reported:
+  SMOKE: PASS: 1280x800 panel, C3 at 281,684, screenshot 198002 bytes
+
+Screenshot:
+  docs/emulator-panel.png
+  1280x800 RGBA PNG, complete IEND chunk, captured from the running emulator.
+
+The same sequence is automated by tools/emulator_smoke.sh for the
+emulator-smoke GitHub Actions job.
+
+Limitations:
+- Touch was synthesized with adb shell input; physical touchscreen feel and
+  input latency were not measured.
+- Audio was consumed by the emulator's AAudio/HDA path; real-device output
+  latency and hardware DAC behavior were not measured.
+- No USB or Bluetooth MIDI hardware was attached.
+- The app was not installed on a physical phone.
+- Under TCG, Android's system UI produced ANR dialogs during boot. The app
+  process and audio callback stayed alive, and the screenshot is a clean panel
+  frame, but the emulator host itself was not a real-time system.

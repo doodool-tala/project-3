@@ -1,0 +1,166 @@
+name: B-3 Physical
+
+on:
+  push:
+    branches: [main, 'freebuff/**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    name: Native engine tests + demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (host)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build engine, tests and demo renderer
+        run: cmake --build build --parallel "$(nproc)"
+
+      - name: Run DSP tests (tuning, foldback, percussion, scanner, rotor, stability)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Render demo performance
+        run: ./build/b3_render b3_demo.wav
+
+      - name: Report demo audio
+        run: |
+          ls -lh b3_demo.wav
+          python3 - <<'PY'
+          import wave, struct, math
+          w = wave.open('b3_demo.wav', 'rb')
+          n, sr = w.getnframes(), w.getframerate()
+          raw = w.readframes(n)
+          w.close()
+          s = struct.unpack('<%dh' % (n * 2), raw)
+          peak = max(abs(s)) / 32768.0
+          rms = math.sqrt(sum((v / 32768.0) ** 2 for v in s) / len(s))
+          print(f'{n} frames, {sr} Hz stereo, {n / sr:.1f}s, peak {peak:.3f}, rms {rms:.4f}')
+          assert peak > 0.1, 'demo is silent'
+          assert peak <= 1.0, 'demo clips'
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: b3-demo-wav
+          path: b3_demo.wav
+          if-no-files-found: error
+
+  apk:
+    name: Android APK
+    runs-on: ubuntu-latest
+    needs: engine
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install SDK, NDK and CMake
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          yes | sdkmanager --install \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.1.10909125" \
+            "cmake;3.22.1" > /dev/null
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug and release APKs
+        run: ./gradlew :app:assembleDebug :app:assembleRelease --stacktrace
+
+      - name: Collect and verify APKs
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/B3Physical-debug.apk
+          cp app/build/outputs/apk/release/app-release.apk dist/B3Physical-release.apk
+          ls -lh dist
+          BT="$ANDROID_HOME/build-tools/34.0.0"
+          "$BT/aapt" dump badging dist/B3Physical-release.apk > /tmp/badging.txt
+          sed -n '1,20p' /tmp/badging.txt
+          grep -q "package: name='com.b3organ.physical'" /tmp/badging.txt
+          grep -q "sdkVersion:'26'" /tmp/badging.txt
+          grep -q "targetSdkVersion:'34'" /tmp/badging.txt
+          unzip -l dist/B3Physical-release.apk > /tmp/apk-list.txt
+          grep -E 'classes.*\.dex|lib/.*\.so' /tmp/apk-list.txt
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            grep -q "lib/$abi/libb3jni.so" /tmp/apk-list.txt || { echo "missing libb3jni for $abi"; exit 1; }
+            grep -q "lib/$abi/liboboe.so" /tmp/apk-list.txt || { echo "missing liboboe for $abi"; exit 1; }
+          done
+          "$BT/apksigner" verify --print-certs dist/B3Physical-release.apk | sed -n '1,5p'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: b3-physical-apk
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Attach APKs to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.apk
+          generate_release_notes: true
+
+  emulator-smoke:
+    name: Emulator install, launch, touch + audio
+    runs-on: ubuntu-latest
+    needs: apk
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: b3-physical-apk
+          path: dist
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run the APK on an x86_64 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: default
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-boot-timeout: 900
+          emulator-options: >-
+            -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim
+            -camera-back none -camera-front none
+          script: |
+            chmod +x tools/emulator_smoke.sh
+            tools/emulator_smoke.sh dist/B3Physical-debug.apk docs/emulator-panel.png
+
+      - name: Upload emulator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-smoke-evidence
+          path: |
+            docs/emulator-panel.png
+            /tmp/b3_smoke_logcat.txt
+          if-no-files-found: warn
